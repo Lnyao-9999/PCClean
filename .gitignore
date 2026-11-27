@@ -1,0 +1,19 @@
+# 便携运行时（体积大，不入库）
+python/
+
+# 构建产物
+_stage/
+installer/payload.zip
+PCClean_Setup.exe
+PCClean.exe
+build/
+dist/
+*.spec
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 本地数据/备份
+*.reg
+*.log
