@@ -18,7 +18,7 @@ from tkinter import ttk, messagebox, filedialog
 
 from .. import config
 from ..utils import winapi
-from ..engine import scanner, rules, safety, executor, drivers, migrate, uninstall, ram
+from ..engine import scanner, rules, safety, executor, drivers, migrate, uninstall, ram, space
 
 
 RISK_TEXT = {"A": "A·安全", "B": "B·建议", "C": "C·需确认", "D": "D·禁止"}
@@ -87,9 +87,11 @@ class App(tk.Tk):
         self.tab_clean = CleanupTab(self.nb)
         self.tab_uninstall = UninstallTab(self.nb)
         self.tab_ram = RamTab(self.nb)
+        self.tab_space = SpaceTab(self.nb)
         self.nb.add(self.tab_clean, text="  ① 磁盘清理  ")
         self.nb.add(self.tab_uninstall, text="  ② 软件卸载  ")
         self.nb.add(self.tab_ram, text="  ③ 内存优化  ")
+        self.nb.add(self.tab_space, text="  ④ 空间分析  ")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(80, self._poll_jobs)
 
@@ -994,6 +996,192 @@ class RamTab(ttk.Frame):
 
     def _log(self, m):
         self.set_status(m)
+
+    def set_status(self, m):
+        self.master.master.set_status(m)
+
+    def busy(self, on):
+        self.master.master.busy(on)
+
+    def run_async(self, fn, on_done=None, on_error=None):
+        self.master.master.run_async(fn, on_done, on_error)
+
+
+SIZE_CHOICES = {"100 MB": 100 * 1024 ** 2, "200 MB": 200 * 1024 ** 2,
+                "500 MB": 500 * 1024 ** 2, "1 GB": 1024 ** 3,
+                "2 GB": 2 * 1024 ** 3, "5 GB": 5 * 1024 ** 3}
+
+
+class SpaceTab(ttk.Frame):
+    """空间分析：任意盘符的大文件与重复文件（补齐「所有盘符」清理能力）。"""
+
+    def __init__(self, master):
+        super().__init__(master)
+        self.big = []
+        self.dups = []
+        self._cancel = threading.Event()
+        self._build()
+        self.refresh_drives()
+
+    def _build(self):
+        head = ttk.Frame(self, padding=(4, 6, 4, 2))
+        head.pack(fill="x")
+        ttk.Label(head, text="空间分析（所有盘符）", style="Head.TLabel").pack(side="left")
+        self.sum = ttk.Label(head, text="", foreground="#555")
+        self.sum.pack(side="left", padx=16)
+
+        top = ttk.Frame(self, padding=(4, 4))
+        top.pack(fill="x")
+        ttk.Label(top, text="磁盘：").pack(side="left")
+        self.drive_var = tk.StringVar()
+        self.drive_cb = ttk.Combobox(top, textvariable=self.drive_var, width=26, state="readonly")
+        self.drive_cb.pack(side="left", padx=4)
+        ttk.Button(top, text="刷新", command=self.refresh_drives).pack(side="left", padx=3)
+        ttk.Label(top, text="大文件阈值：").pack(side="left", padx=(12, 0))
+        self.size_var = tk.StringVar(value="200 MB")
+        ttk.Combobox(top, textvariable=self.size_var, width=9, state="readonly",
+                     values=list(SIZE_CHOICES.keys())).pack(side="left", padx=3)
+        ttk.Button(top, text="分析大文件", command=self.scan_big).pack(side="left", padx=3)
+        ttk.Button(top, text="查找重复文件", command=self.scan_dups).pack(side="left", padx=3)
+        ttk.Button(top, text="停止", command=self.stop).pack(side="left", padx=3)
+
+        sc = getattr(self.master.master, "scale", 1.0)
+
+        bigf = ttk.LabelFrame(self, text="大文件（勾选后可删除）", padding=4)
+        bigf.pack(fill="both", expand=True, padx=4, pady=2)
+        self.tree_big = ttk.Treeview(bigf, columns=("name", "size", "path"), show="headings")
+        for c, t, w in (("name", "文件名", 320), ("size", "大小", 100), ("path", "路径", 620)):
+            self.tree_big.heading(c, text=t)
+            self.tree_big.column(c, width=int(w * sc), anchor=("e" if c == "size" else "w"))
+        vsb1 = ttk.Scrollbar(bigf, orient="vertical", command=self.tree_big.yview)
+        self.tree_big.configure(yscrollcommand=vsb1.set)
+        self.tree_big.pack(side="left", fill="both", expand=True)
+        vsb1.pack(side="right", fill="y")
+
+        dupf = ttk.LabelFrame(self, text="重复文件（内容相同，可只保留一份）", padding=4)
+        dupf.pack(fill="both", expand=True, padx=4, pady=2)
+        self.tree_dup = ttk.Treeview(dupf, columns=("size", "count", "sample"), show="headings")
+        for c, t, w in (("size", "单个大小", 110), ("count", "份数", 70),
+                        ("sample", "示例路径（第 1 份）", 900)):
+            self.tree_dup.heading(c, text=t)
+            self.tree_dup.column(c, width=int(w * sc), anchor=("e" if c in ("size", "count") else "w"))
+        vsb2 = ttk.Scrollbar(dupf, orient="vertical", command=self.tree_dup.yview)
+        self.tree_dup.configure(yscrollcommand=vsb2.set)
+        self.tree_dup.pack(side="left", fill="both", expand=True)
+        vsb2.pack(side="right", fill="y")
+
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(fill="x")
+        ttk.Button(bar, text="删除所选大文件", command=self.del_big).pack(side="left", padx=3)
+        ttk.Button(bar, text="删除选中组重复副本(保留1份)", command=self.del_dup).pack(side="left", padx=3)
+        ttk.Label(bar, foreground="#777",
+                  text="提示：删除不可恢复；系统受保护目录会自动跳过。大文件建议先考虑迁移/备份。").pack(side="left", padx=10)
+
+    def refresh_drives(self):
+        drives = space.list_drives()
+        values = [f"{d['letter']}  剩余 {_fmt(d['free'])} / {_fmt(d['total'])}" for d in drives]
+        self.drive_cb.configure(values=values)
+        if values:
+            self.drive_var.set(values[0])
+
+    def _current_drive(self):
+        v = self.drive_var.get()
+        if not v:
+            return None
+        return v.split(":")[0] + ":\\"
+
+    def _min_size(self):
+        return SIZE_CHOICES.get(self.size_var.get(), 200 * 1024 ** 2)
+
+    def stop(self):
+        self._cancel.set()
+        self.set_status("已请求停止…")
+
+    def scan_big(self):
+        d = self._current_drive()
+        if not d:
+            return
+        self._cancel.clear()
+        self.set_status(f"正在分析 {d} 的大文件（大容量磁盘可能需要几分钟）…")
+        self.busy(True)
+        min_size = self._min_size()
+
+        def w():
+            return space.find_large_files(d, min_size, limit=400,
+                                          cancel_cb=self._cancel.is_set)
+
+        def done(items):
+            self.busy(False)
+            self.big = items
+            self.tree_big.delete(*self.tree_big.get_children())
+            for i, (p, s) in enumerate(items):
+                self.tree_big.insert("", "end", iid=str(i),
+                                     values=(os.path.basename(p), _fmt(s), p))
+            self.sum.config(text=f"大文件：{len(items)} 个，共 {_fmt(sum(s for _, s in items))}")
+            self.set_status("大文件分析完成")
+
+        self.run_async(w, done)
+
+    def del_big(self):
+        sel = self.tree_big.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先勾选要删除的大文件。")
+            return
+        paths = [self.big[int(i)][0] for i in sel]
+        size = sum(self.big[int(i)][1] for i in sel)
+        if not messagebox.askyesno("确认删除",
+                                   f"将彻底删除 {len(paths)} 个大文件，共 {_fmt(size)}。\n"
+                                   "删除后不可恢复，确认？"):
+            return
+        self.run_async(lambda: executor.delete_files(paths, mode="delete"),
+                       lambda r: (self._after_del(r), self.scan_big()))
+
+    def scan_dups(self):
+        d = self._current_drive()
+        if not d:
+            return
+        self._cancel.clear()
+        self.set_status(f"正在查找 {d} 的重复文件（仅比较 ≥10MB 的文件）…")
+        self.busy(True)
+
+        def w():
+            return space.find_duplicates(d, min_size=10 * 1024 * 1024,
+                                         cancel_cb=self._cancel.is_set)
+
+        def done(groups):
+            self.busy(False)
+            self.dups = groups
+            self.tree_dup.delete(*self.tree_dup.get_children())
+            for i, g in enumerate(groups):
+                self.tree_dup.insert("", "end", iid=str(i),
+                                     values=(_fmt(g["size"]), len(g["files"]), g["files"][0]))
+            waste = sum(g["size"] * (len(g["files"]) - 1) for g in groups)
+            self.sum.config(text=f"重复组：{len(groups)} 组，可回收约 {_fmt(waste)}")
+            self.set_status("重复文件查找完成")
+
+        self.run_async(w, done)
+
+    def del_dup(self):
+        sel = self.tree_dup.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先选择重复组。")
+            return
+        to_del = []
+        freed = 0
+        for i in sel:
+            g = self.dups[int(i)]
+            to_del.extend(g["files"][1:])
+            freed += g["size"] * (len(g["files"]) - 1)
+        if not messagebox.askyesno("确认",
+                                   f"将每组保留第 1 份，删除其余 {len(to_del)} 个副本，"
+                                   f"可回收约 {_fmt(freed)}。\n确认？"):
+            return
+        self.run_async(lambda: executor.delete_files(to_del, mode="delete"),
+                       lambda r: (self._after_del(r), self.scan_dups()))
+
+    def _after_del(self, r):
+        ok, fail, freed = r
+        messagebox.showinfo("完成", f"已删除 {ok} 个，失败 {fail} 个，释放约 {_fmt(freed)}。")
 
     def set_status(self, m):
         self.master.master.set_status(m)

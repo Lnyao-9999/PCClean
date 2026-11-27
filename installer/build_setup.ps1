@@ -21,7 +21,7 @@ Write-Host "2/6 compile uninstaller"
 if ($LASTEXITCODE -ne 0) { throw "uninstaller compile failed" }
 
 Write-Host "3/6 copy app files"
-& robocopy $root $stage /E /XD __pycache__ build dist /XF *.pyc smoke_test.py collect_test.py launch_test.py executor_test.py dialog_test.py launcher.cs app.manifest /NFL /NDL /NJH /NJS /NP | Out-Null
+& robocopy $root $stage /E /XD __pycache__ build dist .github /XF *.pyc smoke_test.py collect_test.py launch_test.py executor_test.py dialog_test.py space_test.py launcher.cs app.manifest /NFL /NDL /NJH /NJS /NP | Out-Null
 if ($LASTEXITCODE -ge 8) { throw "robocopy failed: $LASTEXITCODE" }
 
 Write-Host "4/6 create payload.zip"

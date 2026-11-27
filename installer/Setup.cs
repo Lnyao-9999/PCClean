@@ -11,7 +11,7 @@ using Microsoft.Win32;
 class Setup
 {
     const string AppName = "全能磁盘清理专家";
-    const string AppVersion = "1.2.3";
+    const string AppVersion = "1.3.0";
 
     [STAThread]
     static int Main(string[] args)

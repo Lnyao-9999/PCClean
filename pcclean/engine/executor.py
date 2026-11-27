@@ -147,6 +147,35 @@ def clear_quarantine():
     return safety.purge_all_quarantine()
 
 
+def delete_files(paths, mode="delete", reason="空间分析手动清理"):
+    """批量删除指定文件（空间分析用）。返回 (成功数, 失败数, 释放字节)。"""
+    ok = fail = 0
+    freed = 0
+    for p in paths:
+        if not os.path.exists(p):
+            continue
+        if safety.is_protected(p) or not safety.is_safe_to_touch(p):
+            fail += 1
+            continue
+        try:
+            size = os.path.getsize(p) if os.path.isfile(p) else 0
+        except OSError:
+            size = 0
+        if mode == "quarantine":
+            try:
+                safety.quarantine(p, reason, size)
+                ok += 1
+                freed += size
+            except Exception:  # noqa: BLE001
+                fail += 1
+        elif _robust_delete(p):
+            ok += 1
+            freed += size
+        else:
+            fail += 1
+    return ok, fail, freed
+
+
 def _wu_clean():
     if not winapi.is_admin():
         return False, "需管理员权限", 0
