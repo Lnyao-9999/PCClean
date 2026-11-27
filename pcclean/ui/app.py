@@ -1020,6 +1020,8 @@ class SpaceTab(ttk.Frame):
         self.big = []
         self.dups = []
         self._cancel = threading.Event()
+        self._checked_big = set()
+        self._checked_dup = set()
         self._build()
         self.refresh_drives()
 
@@ -1047,35 +1049,86 @@ class SpaceTab(ttk.Frame):
 
         sc = getattr(self.master.master, "scale", 1.0)
 
-        bigf = ttk.LabelFrame(self, text="大文件（勾选后可删除）", padding=4)
+        # 操作栏必须先以 side="bottom" 固定，否则会被 expand 的列表挤成 0 高度
+        bar = ttk.Frame(self, padding=4)
+        bar.pack(side="bottom", fill="x")
+        ttk.Button(bar, text="全选大文件", command=self.select_all_big).pack(side="left", padx=3)
+        ttk.Button(bar, text="全不选", command=self.select_none_big).pack(side="left", padx=3)
+        ttk.Button(bar, text="删除已勾选大文件", style="Big.TButton",
+                   command=self.del_big).pack(side="left", padx=3)
+        ttk.Button(bar, text="全选重复组", command=self.select_all_dup).pack(side="left", padx=8)
+        ttk.Button(bar, text="删除已勾选重复组副本", command=self.del_dup).pack(side="left", padx=3)
+        self.bar_hint = ttk.Label(bar, foreground="#777", text="")
+        self.bar_hint.pack(side="left", padx=10)
+
+        bigf = ttk.LabelFrame(self, text="大文件（单击行勾选 → 点下方「删除已勾选大文件」）", padding=4)
         bigf.pack(fill="both", expand=True, padx=4, pady=2)
-        self.tree_big = ttk.Treeview(bigf, columns=("name", "size", "path"), show="headings")
-        for c, t, w in (("name", "文件名", 320), ("size", "大小", 100), ("path", "路径", 620)):
+        self.tree_big = ttk.Treeview(bigf, columns=("check", "name", "size", "path"),
+                                     show="headings", selectmode="browse")
+        for c, t, w, a in (("check", "勾选", 56, "center"), ("name", "文件名", 300, "w"),
+                           ("size", "大小", 100, "e"), ("path", "路径", 640, "w")):
             self.tree_big.heading(c, text=t)
-            self.tree_big.column(c, width=int(w * sc), anchor=("e" if c == "size" else "w"))
+            self.tree_big.column(c, width=int(w * sc), anchor=a, stretch=(c in ("name", "path")))
+        self.tree_big.bind("<Button-1>", lambda e: self._toggle(e, self.tree_big, self._checked_big))
         vsb1 = ttk.Scrollbar(bigf, orient="vertical", command=self.tree_big.yview)
         self.tree_big.configure(yscrollcommand=vsb1.set)
         self.tree_big.pack(side="left", fill="both", expand=True)
         vsb1.pack(side="right", fill="y")
 
-        dupf = ttk.LabelFrame(self, text="重复文件（内容相同，可只保留一份）", padding=4)
+        dupf = ttk.LabelFrame(self, text="重复文件（单击行勾选 → 每组保留第 1 份，删除其余）", padding=4)
         dupf.pack(fill="both", expand=True, padx=4, pady=2)
-        self.tree_dup = ttk.Treeview(dupf, columns=("size", "count", "sample"), show="headings")
-        for c, t, w in (("size", "单个大小", 110), ("count", "份数", 70),
-                        ("sample", "示例路径（第 1 份）", 900)):
+        self.tree_dup = ttk.Treeview(dupf, columns=("check", "size", "count", "sample"),
+                                     show="headings", selectmode="browse")
+        for c, t, w, a in (("check", "勾选", 56, "center"), ("size", "单个大小", 110, "e"),
+                           ("count", "份数", 70, "e"), ("sample", "示例路径（第 1 份）", 900, "w")):
             self.tree_dup.heading(c, text=t)
-            self.tree_dup.column(c, width=int(w * sc), anchor=("e" if c in ("size", "count") else "w"))
+            self.tree_dup.column(c, width=int(w * sc), anchor=a, stretch=(c == "sample"))
+        self.tree_dup.bind("<Button-1>", lambda e: self._toggle(e, self.tree_dup, self._checked_dup))
         vsb2 = ttk.Scrollbar(dupf, orient="vertical", command=self.tree_dup.yview)
         self.tree_dup.configure(yscrollcommand=vsb2.set)
         self.tree_dup.pack(side="left", fill="both", expand=True)
         vsb2.pack(side="right", fill="y")
 
-        bar = ttk.Frame(self, padding=4)
-        bar.pack(fill="x")
-        ttk.Button(bar, text="删除所选大文件", command=self.del_big).pack(side="left", padx=3)
-        ttk.Button(bar, text="删除选中组重复副本(保留1份)", command=self.del_dup).pack(side="left", padx=3)
-        ttk.Label(bar, foreground="#777",
-                  text="提示：删除不可恢复；系统受保护目录会自动跳过。大文件建议先考虑迁移/备份。").pack(side="left", padx=10)
+        self._update_sel_label()
+
+    # ---- 勾选 ----
+    def _toggle(self, event, tree, checked):
+        row = tree.identify_row(event.y)
+        if not row:
+            return
+        if row in checked:
+            checked.discard(row)
+        else:
+            checked.add(row)
+        self._refresh_checks(tree, checked)
+
+    def _refresh_checks(self, tree, checked):
+        for iid in tree.get_children():
+            vals = list(tree.item(iid, "values"))
+            if not vals:
+                continue
+            vals[0] = "☑" if iid in checked else "☐"
+            tree.item(iid, values=vals)
+        self._update_sel_label()
+
+    def _update_sel_label(self):
+        self.bar_hint.config(
+            text=f"已勾选：大文件 {len(self._checked_big)} 个，重复组 {len(self._checked_dup)} 组。"
+                 "单击行可勾选/取消；删除不可恢复。")
+
+    def select_all_big(self):
+        self._checked_big = set(self.tree_big.get_children())
+        self._refresh_checks(self.tree_big, self._checked_big)
+
+    def select_none_big(self):
+        self._checked_big.clear()
+        self._checked_dup.clear()
+        self._refresh_checks(self.tree_big, self._checked_big)
+        self._refresh_checks(self.tree_dup, self._checked_dup)
+
+    def select_all_dup(self):
+        self._checked_dup = set(self.tree_dup.get_children())
+        self._refresh_checks(self.tree_dup, self._checked_dup)
 
     def refresh_drives(self):
         drives = space.list_drives()
@@ -1113,21 +1166,24 @@ class SpaceTab(ttk.Frame):
         def done(items):
             self.busy(False)
             self.big = items
+            self._checked_big.clear()
             self.tree_big.delete(*self.tree_big.get_children())
             for i, (p, s) in enumerate(items):
                 self.tree_big.insert("", "end", iid=str(i),
-                                     values=(os.path.basename(p), _fmt(s), p))
-            self.sum.config(text=f"大文件：{len(items)} 个，共 {_fmt(sum(s for _, s in items))}")
+                                     values=("☐", os.path.basename(p), _fmt(s), p))
+            self.sum.config(text=f"大文件：{len(items)} 个，共 {_fmt(sum(s for _, s in items))}"
+                                 "（单击行勾选，再点下方按钮删除）")
+            self._update_sel_label()
             self.set_status("大文件分析完成")
 
         self.run_async(w, done)
 
     def del_big(self):
-        sel = self.tree_big.selection()
+        sel = set(self._checked_big) or set(self.tree_big.selection())
         if not sel:
-            messagebox.showinfo("提示", "请先勾选要删除的大文件。")
+            messagebox.showinfo("提示", "请先单击行勾选要删除的大文件（或点「全选大文件」）。")
             return
-        paths = [self.big[int(i)][0] for i in sel]
+        paths = [self.big[int(i)][0] for i in sorted(sel, key=int)]
         size = sum(self.big[int(i)][1] for i in sel)
         if not messagebox.askyesno("确认删除",
                                    f"将彻底删除 {len(paths)} 个大文件，共 {_fmt(size)}。\n"
@@ -1151,24 +1207,26 @@ class SpaceTab(ttk.Frame):
         def done(groups):
             self.busy(False)
             self.dups = groups
+            self._checked_dup.clear()
             self.tree_dup.delete(*self.tree_dup.get_children())
             for i, g in enumerate(groups):
                 self.tree_dup.insert("", "end", iid=str(i),
-                                     values=(_fmt(g["size"]), len(g["files"]), g["files"][0]))
+                                     values=("☐", _fmt(g["size"]), len(g["files"]), g["files"][0]))
             waste = sum(g["size"] * (len(g["files"]) - 1) for g in groups)
-            self.sum.config(text=f"重复组：{len(groups)} 组，可回收约 {_fmt(waste)}")
+            self.sum.config(text=f"重复组：{len(groups)} 组，可回收约 {_fmt(waste)}（单击行勾选）")
+            self._update_sel_label()
             self.set_status("重复文件查找完成")
 
         self.run_async(w, done)
 
     def del_dup(self):
-        sel = self.tree_dup.selection()
+        sel = set(self._checked_dup) or set(self.tree_dup.selection())
         if not sel:
-            messagebox.showinfo("提示", "请先选择重复组。")
+            messagebox.showinfo("提示", "请先单击行勾选重复组（或点「全选重复组」）。")
             return
         to_del = []
         freed = 0
-        for i in sel:
+        for i in sorted(sel, key=int):
             g = self.dups[int(i)]
             to_del.extend(g["files"][1:])
             freed += g["size"] * (len(g["files"]) - 1)
