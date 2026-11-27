@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Byte-compile all sources
+        run: python -m compileall -q pcclean
+
+      - name: Import check (UI + engines)
+        run: python -c "import sys; sys.path.insert(0,'.'); import pcclean.ui.app; from pcclean.engine import scanner, rules, safety, executor, drivers, migrate, uninstall, ram, space; print('import ok')"
+
+      - name: Space analysis smoke test
+        run: python space_test.py
