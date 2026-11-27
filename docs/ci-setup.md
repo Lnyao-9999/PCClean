@@ -1,10 +1,14 @@
-# 启用 GitHub Actions CI
+# GitHub Actions CI
 
-本项目的 CI 配置见下方。由于通过 GitHub API 创建 `.github/workflows/` 下的文件需要令牌具备 **`workflow`** 权限（当前自动上传使用的令牌只有 `repo` 权限，所以该文件未自动推送），请手动添加一次（约 30 秒）：
+本项目 CI **已启用**，配置位于 `.github/workflows/ci.yml`，每次 push / PR 自动运行：
 
-1. 打开仓库首页 → **Add file** → **Create new file**
-2. 文件名填写：`.github/workflows/ci.yml`
-3. 粘贴下面内容 → **Commit changes**
+- **Byte-compile**：对 `pcclean/` 全量字节码编译
+- **Import check**：导入 UI 与全部引擎模块（含 tkinter）
+- **Space analysis smoke test**：运行 `space_test.py`（盘符枚举 / 大文件 / 重复文件）
+
+运行记录：https://github.com/Lnyao-9999/PCClean/actions
+
+当前配置内容（如需修改，直接编辑该文件并提交）：
 
 ```yaml
 name: CI
@@ -35,5 +39,3 @@ jobs:
       - name: Space analysis smoke test
         run: python space_test.py
 ```
-
-提交后，每次 push 都会在 Actions 页自动跑「编译 + 导入检查 + 空间分析自检」，README 顶部的 CI 徽章也会变成通过状态。
